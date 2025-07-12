@@ -37,7 +37,7 @@ class PortfolioEvaluator:
         return device
         
     def load_model(self, num_assets=5, hidden_size=64, num_channels=[32, 64, 128], 
-                   kernel_size=3, dropout=0.2):
+                kernel_size=3, dropout=0.2):
         """훈련된 모델 로드"""
         
         # 모델 생성
@@ -61,7 +61,7 @@ class PortfolioEvaluator:
         # 체크포인트 정보 저장
         self.checkpoint_info = checkpoint
         
-        print(f"✅ 모델 로드 완료: {self.model_path}")
+        print(f"모델 로드 완료: {self.model_path}")
         print(f"훈련 에포크: {checkpoint.get('epoch', 'N/A')}")
         print(f"훈련 손실: {checkpoint.get('train_loss', 'N/A'):.4f}")
         print(f"검증 손실: {checkpoint.get('val_loss', 'N/A'):.4f}")
@@ -175,7 +175,7 @@ class PortfolioEvaluator:
         ax = axes[2]
         weight_corr = np.corrcoef(weights.T)
         sns.heatmap(weight_corr, annot=True, cmap='RdBu_r', center=0,
-                   xticklabels=asset_names, yticklabels=asset_names, ax=ax)
+                xticklabels=asset_names, yticklabels=asset_names, ax=ax)
         ax.set_title('가중치 상관관계 행렬', fontsize=14, fontweight='bold')
         
         # 4. 가중치 변동성
@@ -189,7 +189,7 @@ class PortfolioEvaluator:
         # 값 표시
         for bar, std in zip(bars, weight_std):
             ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.001,
-                   f'{std:.3f}', ha='center', va='bottom')
+                f'{std:.3f}', ha='center', va='bottom')
         
         # 5. 가중치 합 검증
         ax = axes[4]
@@ -213,7 +213,7 @@ class PortfolioEvaluator:
         # 값 표시
         for bar, weight in zip(bars, mean_weights):
             ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.005,
-                   f'{weight:.3f}', ha='center', va='bottom')
+                f'{weight:.3f}', ha='center', va='bottom')
         
         plt.tight_layout()
         plt.savefig(save_path / 'portfolio_weights_analysis.png', dpi=300, bbox_inches='tight')
@@ -236,7 +236,7 @@ class PortfolioEvaluator:
             ax.set_xlabel('베타')
             ax.set_ylabel('빈도')
             ax.axvline(betas[:, i].mean(), color='red', linestyle='--', 
-                      label=f'평균: {betas[:, i].mean():.3f}')
+                    label=f'평균: {betas[:, i].mean():.3f}')
             ax.axvline(1.0, color='gray', linestyle='-', alpha=0.5, label='시장 베타 (1.0)')
             ax.legend()
             ax.grid(True, alpha=0.3)
@@ -245,7 +245,7 @@ class PortfolioEvaluator:
         ax = axes[5]
         beta_corr = np.corrcoef(betas.T)
         sns.heatmap(beta_corr, annot=True, cmap='coolwarm', center=0,
-                   xticklabels=asset_names, yticklabels=asset_names, ax=ax)
+                xticklabels=asset_names, yticklabels=asset_names, ax=ax)
         ax.set_title('베타 상관관계 행렬', fontsize=14, fontweight='bold')
         
         plt.tight_layout()
@@ -265,7 +265,7 @@ class PortfolioEvaluator:
         ax.set_xlabel('샤프 비율')
         ax.set_ylabel('빈도')
         ax.axvline(sharpe_ratios.mean(), color='red', linestyle='--',
-                  label=f'평균: {sharpe_ratios.mean():.3f}')
+                label=f'평균: {sharpe_ratios.mean():.3f}')
         ax.axvline(0, color='gray', linestyle='-', alpha=0.5, label='기준선 (0)')
         ax.legend()
         ax.grid(True, alpha=0.3)
@@ -371,7 +371,7 @@ class PortfolioEvaluator:
         # 전체 결과 저장
         np.savez_compressed(save_path / 'detailed_results.npz', **results)
         
-        print(f"\n✅ 종합 분석 완료! 결과가 {save_path}에 저장되었습니다.")
+        print(f"\n 종합 분석 완료! 결과가 {save_path}에 저장되었습니다.")
         print(f"   - 포트폴리오 가중치 분석: portfolio_weights_analysis.png")
         print(f"   - 베타 분석: beta_analysis.png")
         print(f"   - 성능 분석: performance_analysis.png")
@@ -461,10 +461,10 @@ def main():
             results, performance, args.save_path
         )
         
-        print("\n✅ 테스트가 성공적으로 완료되었습니다!")
+        print("\n테스트가 성공적으로 완료되었습니다!")
         
     except Exception as e:
-        print(f"\n❌ 테스트 중 오류 발생: {e}")
+        print(f"\n테스트 중 오류 발생: {e}")
         import traceback
         traceback.print_exc()
         raise

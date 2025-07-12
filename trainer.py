@@ -8,7 +8,7 @@ import os
 import time
 from tqdm import tqdm
 
-from model import AdaptivePortfolioOptimizer
+from model.w_mlp_model import AdaptivePortfolioOptimizer
 
 class PortfolioTrainer:
     def __init__(self, model, train_loader, val_loader, test_loader,                
@@ -99,7 +99,7 @@ class PortfolioTrainer:
                 'Return': f'{realized_returns.mean().item():.4f}'
             })
             
-                            # 첫 번째 배치에서 상세 정보 출력 (디버깅용)
+            # 첫 번째 배치에서 상세 정보 출력 (디버깅용)
             if batch_idx == 0 and len(self.train_losses) == 0:
                 print(f"\n=== 첫 번째 훈련 배치 상세 정보 ===")
                 print(f"배치 크기: {asset_data.shape[0]}")
@@ -108,9 +108,42 @@ class PortfolioTrainer:
                 print(f"손실: {loss.item():.6f}")
                 print(f"샤프 비율: {realized_sharpe.mean().item():.6f}")
                 print(f"실현 수익률: {realized_returns.mean().item():.6f}")
+                
+                # 베타 값 상세 분석
+                print(f"\n--- 베타 값 분석 ---")
                 print(f"베타 평균: {betas.mean().item():.6f}")
+                print(f"베타 표준편차: {betas.std().item():.6f}")
+                print(f"베타 범위: [{betas.min().item():.4f}, {betas.max().item():.4f}]")
+                print(f"베타 중앙값: {betas.median().item():.6f}")
+                
+                # 각 자산별 베타 (첫 번째 배치 샘플)
+                if betas.shape[0] > 0:
+                    first_sample_betas = betas[0]  # 첫 번째 샘플의 베타들
+                    print(f"첫 번째 샘플 베타들: {[f'{b.item():.4f}' for b in first_sample_betas]}")
+                
+                # 기대수익률 분석
+                expected_rets = results['expected_returns']
+                print(f"\n--- 기대수익률 분석 ---")
+                print(f"기대수익률 평균: {expected_rets.mean().item():.6f}")
+                print(f"기대수익률 범위: [{expected_rets.min().item():.6f}, {expected_rets.max().item():.6f}]")
+                if expected_rets.shape[0] > 0:
+                    first_sample_rets = expected_rets[0]
+                    print(f"첫 번째 샘플 기대수익률: {[f'{r.item():.6f}' for r in first_sample_rets]}")
+                
+                print(f"\n--- 포트폴리오 가중치 분석 ---")
                 print(f"가중치 합: {weights.sum(dim=1).mean().item():.6f}")
                 print(f"가중치 범위: [{weights.min().item():.4f}, {weights.max().item():.4f}]")
+                if weights.shape[0] > 0:
+                    first_sample_weights = weights[0]
+                    print(f"첫 번째 샘플 가중치: {[f'{w.item():.4f}' for w in first_sample_weights]}")
+                
+                # 시장 데이터 확인
+                print(f"\n--- 시장 데이터 분석 ---")
+                mkt_rf = common_data[:, :, 0]  # 시장 초과 수익률
+                rf = common_data[:, :, 1]      # 무위험 수익률
+                print(f"시장 초과수익률 평균: {mkt_rf.mean().item():.6f}")
+                print(f"무위험 이자율 평균: {rf.mean().item():.6f}")
+                print(f"시장 초과수익률 범위: [{mkt_rf.min().item():.6f}, {mkt_rf.max().item():.6f}]")
         
         return epoch_loss / num_batches, epoch_sharpe / num_batches, epoch_returns / num_batches
     
@@ -156,11 +189,20 @@ class PortfolioTrainer:
                 
                 # 첫 번째 배치에서 상세 정보 출력 (디버깅용)
                 if batch_idx == 0:
+                    betas = results['betas']
+                    expected_rets = results['expected_returns']
+                    
                     print(f"\n=== 첫 번째 검증 배치 정보 ===")
                     print(f"손실: {loss.item():.6f}")
                     print(f"샤프 비율: {realized_sharpe.mean().item():.6f}")
                     print(f"실현 수익률: {realized_returns.mean().item():.6f}")
                     print(f"가중치 합: {weights.sum(dim=1).mean().item():.6f}")
+                    
+                    print(f"\n--- 검증 베타 값 분석 ---")
+                    print(f"베타 평균: {betas.mean().item():.6f}")
+                    print(f"베타 범위: [{betas.min().item():.4f}, {betas.max().item():.4f}]")
+                    print(f"기대수익률 평균: {expected_rets.mean().item():.6f}")
+                    print(f"기대수익률 범위: [{expected_rets.min().item():.6f}, {expected_rets.max().item():.6f}]")
         
         return epoch_loss / num_batches, epoch_sharpe / num_batches, epoch_returns / num_batches
     

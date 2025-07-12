@@ -18,7 +18,7 @@ class FinancialDataset(Dataset):
     - 시계열 슬라이딩 윈도우 방식으로 과거 데이터와 미래 수익률 생성
     """
     
-    def __init__(self, data_dir, lookback=252, pred_horizon=21, split='train', normalize=False):
+    def __init__(self, data_dir, lookback=252, pred_horizon=21, split='train', normalize=False, rebalancing_frequency='monthly'):
         """
         Args:
             data_dir (str): 데이터 디렉토리 경로
@@ -26,12 +26,14 @@ class FinancialDataset(Dataset):
             pred_horizon (int): 예측 기간 (일) - 기본값 21일 (1개월)
             split (str): 데이터 분할 ('train', 'val', 'test')
             normalize (bool): 데이터 정규화 여부
+            rebalancing_frequency (str): 리밸런싱 주기 ('daily' 또는 'monthly')
         """
         self.data_dir = Path(data_dir)
         self.lookback = lookback
         self.pred_horizon = pred_horizon
         self.split = split
         self.normalize = normalize
+        self.rebalancing_frequency = rebalancing_frequency
         
         # 자산 명칭 정의
         self.asset_names = ['AAPL', 'IBM', 'INTC', 'MSFT', 'ORCL']
@@ -49,6 +51,7 @@ class FinancialDataset(Dataset):
         
         if split == 'train':  # 훈련 데이터에서만 상세 정보 출력
             self._print_dataset_info()
+            self._print_rebalancing_info()
     
     def _load_and_preprocess_data(self):
         """데이터 로드 및 전처리"""
@@ -285,6 +288,24 @@ class FinancialDataset(Dataset):
         print(f"  테스트: {test_samples:,}개 샘플")
         print(f"  현재 분할({self.split}): {len(self.valid_indices):,}개 샘플")
     
+    def _print_rebalancing_info(self):
+        """리밸런싱 정보 출력"""
+        print(f"\n=== 리밸런싱 설정 정보 ===")
+        if self.rebalancing_frequency == 'monthly':
+            print(f"월별 리밸런싱 설정:")
+            print(f"  - 예측 기간: {self.pred_horizon}일 (약 {self.pred_horizon/21:.1f}개월)")
+            print(f"  - 한 달 거래일: 약 21일")
+            print(f"  - 연간화 기준: 12개월")
+            if self.pred_horizon < 21:
+                print(f"  ⚠️ 예측 기간이 한 달(21일)보다 짧습니다. 스케일링을 통해 월간 수익률로 변환됩니다.")
+            elif self.pred_horizon >= 21:
+                n_months = self.pred_horizon // 21
+                print(f"  ✓ 예측 기간에서 {n_months}개의 완전한 월간 데이터를 계산할 수 있습니다.")
+        else:
+            print(f"일별 리밸런싱 설정:")
+            print(f"  - 예측 기간: {self.pred_horizon}일")
+            print(f"  - 연간화 기준: 252거래일")
+    
     def __len__(self):
         """데이터셋 크기 반환"""
         return len(self.valid_indices)
@@ -340,7 +361,7 @@ class FinancialDataset(Dataset):
 
 
 def create_dataloaders(data_dir, batch_size=32, lookback=252, pred_horizon=21, 
-                      normalize=False, num_workers=0, pin_memory=True):
+                      normalize=False, num_workers=0, pin_memory=True, rebalancing_frequency='monthly'):
     """
     훈련/검증/테스트 데이터 로더 생성
     
@@ -352,6 +373,7 @@ def create_dataloaders(data_dir, batch_size=32, lookback=252, pred_horizon=21,
         normalize (bool): 데이터 정규화 여부
         num_workers (int): 데이터 로딩 워커 수
         pin_memory (bool): GPU 메모리 고정 여부
+        rebalancing_frequency (str): 리밸런싱 주기 ('daily' 또는 'monthly')
         
     Returns:
         tuple: (train_loader, val_loader, test_loader)
@@ -365,6 +387,7 @@ def create_dataloaders(data_dir, batch_size=32, lookback=252, pred_horizon=21,
     print(f"  시계열 길이: {lookback}일")
     print(f"  예측 기간: {pred_horizon}일")
     print(f"  정규화: {'Yes' if normalize else 'No'}")
+    print(f"  리밸런싱 주기: {rebalancing_frequency}")
     print(f"  워커 수: {num_workers}")
     print(f"  메모리 고정: {'Yes' if pin_memory else 'No'}")
     
@@ -375,7 +398,8 @@ def create_dataloaders(data_dir, batch_size=32, lookback=252, pred_horizon=21,
             lookback=lookback,
             pred_horizon=pred_horizon,
             split='train',
-            normalize=normalize
+            normalize=normalize,
+            rebalancing_frequency=rebalancing_frequency
         )
         
         val_dataset = FinancialDataset(
@@ -383,7 +407,8 @@ def create_dataloaders(data_dir, batch_size=32, lookback=252, pred_horizon=21,
             lookback=lookback,
             pred_horizon=pred_horizon,
             split='val',
-            normalize=normalize
+            normalize=normalize,
+            rebalancing_frequency=rebalancing_frequency
         )
         
         test_dataset = FinancialDataset(
@@ -391,7 +416,8 @@ def create_dataloaders(data_dir, batch_size=32, lookback=252, pred_horizon=21,
             lookback=lookback,
             pred_horizon=pred_horizon,
             split='test',
-            normalize=normalize
+            normalize=normalize,
+            rebalancing_frequency=rebalancing_frequency
         )
         
         # 데이터 로더 생성

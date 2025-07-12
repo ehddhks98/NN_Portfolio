@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 import argparse
 
-from model import AdaptivePortfolioOptimizer
+from model.w_mlp_model import AdaptivePortfolioOptimizer
 from dataloader import create_dataloaders
 from trainer import PortfolioTrainer
 import os
@@ -25,7 +25,7 @@ def parse_arguments():
     parser.add_argument('--data_dir', type=str, default=default_data_dir, help='데이터 디렉토리 경로')
     parser.add_argument('--batch_size', type=int, default=32, help='배치 크기')
     parser.add_argument('--lookback', type=int, default=252, help='과거 데이터 길이 (일)')
-    parser.add_argument('--pred_horizon', type=int, default=21, help='예측 기간 (일)')
+    parser.add_argument('--pred_horizon', type=int, default=20, help='예측 기간 (일)')
     parser.add_argument('--normalize', action='store_true', default=False, help='데이터 정규화 활성화')
     
     # 모델 관련 인수
@@ -37,7 +37,7 @@ def parse_arguments():
     
     # 훈련 관련 인수
     parser.add_argument('--num_epochs', type=int, default=100, help='훈련 에포크 수')
-    parser.add_argument('--learning_rate', type=float, default=1e-4, help='학습률')
+    parser.add_argument('--learning_rate', type=float, default=1e-3, help='학습률')
     parser.add_argument('--device', type=str, default='auto', help='계산 디바이스 (auto, cuda, cpu)')
     
     # 저장 관련 인수
@@ -165,16 +165,16 @@ def train_portfolio_model(args):
     # 테스트 결과 저장
     try:
         torch.save(test_results, save_path / 'final_test_results.pth')
-        print(f"✅ 테스트 결과 저장: {save_path / 'final_test_results.pth'}")
+        print(f"테스트 결과 저장: {save_path / 'final_test_results.pth'}")
     except Exception as e:
-        print(f"❌ 테스트 결과 저장 실패: {e}")
+        print(f"테스트 결과 저장 실패: {e}")
     
     # 훈련 히스토리 저장
     try:
         np.save(save_path / 'training_history.npy', history)
-        print(f"✅ 훈련 히스토리 저장: {save_path / 'training_history.npy'}")
+        print(f"훈련 히스토리 저장: {save_path / 'training_history.npy'}")
     except Exception as e:
-        print(f"❌ 훈련 히스토리 저장 실패: {e}")
+        print(f"훈련 히스토리 저장 실패: {e}")
     
     print(f"\n결과가 {save_path}에 저장되었습니다.")
     
@@ -194,10 +194,10 @@ def main():
         # 훈련 실행
         history, test_results = train_portfolio_model(args)
         
-        print("\n✅ 훈련이 성공적으로 완료되었습니다!")
+        print("\n훈련이 성공적으로 완료되었습니다!")
         
     except Exception as e:
-        print(f"\n❌ 훈련 중 오류 발생: {e}")
+        print(f"\n훈련 중 오류 발생: {e}")
         import traceback
         traceback.print_exc()
         raise

@@ -43,15 +43,6 @@ class TemporalBlock(nn.Module):
         self.final_activation = nn.LeakyReLU(0.1)
 
     def forward(self, x):
-        """
-        TemporalBlock의 순전파 함수.
-        
-        Args:
-            x: 입력 텐서, 형태: (batch_size, in_channels, seq_len)
-            
-        Returns:
-            출력 텐서, 형태: (batch_size, out_channels, seq_len)
-        """
         out = self.net(x)
         res = x if self.downsample is None else self.downsample(x)
         return self.final_activation(out + res)
@@ -76,17 +67,6 @@ class TCNEncoder(nn.Module):
         )
         
     def forward(self, x):
-        """
-        TCNEncoder의 순전파 함수.
-        
-        Args:
-            x: 입력 텐서, 형태: (batch_size, seq_len, input_size)
-            Conv1d를 위해 (batch_size, input_size, seq_len)로 변환됨
-        
-        Returns:
-            출력 텐서, 형태: (batch_size, hidden_size)
-            전체 시퀀스를 인코딩하는 최종 은닉 상태를 나타냄
-        """
         # Conv1d를 위한 전치: (batch, seq, features) → (batch, features, seq)
         x = x.transpose(1, 2)
         
@@ -113,103 +93,90 @@ class BetaEstimator(nn.Module):
             dropout=dropout
         )
         self.asset_embeddings = nn.Embedding(num_assets, hidden_size)
-        self.beta_predictor = nn.Sequential(
+        
+        # 베타 예측기 - 더 깊은 네트워크와 잔차 연결
+        self.beta_hidden1 = nn.Sequential(
             nn.Linear(hidden_size * 3, hidden_size),
             nn.BatchNorm1d(hidden_size),
             nn.LeakyReLU(0.1),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_size, 1)
-        )       
+            nn.Dropout(dropout)
+        )
+        
+        self.beta_hidden2 = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size // 2),
+            nn.BatchNorm1d(hidden_size // 2),
+            nn.LeakyReLU(0.1),
+            nn.Dropout(dropout * 0.5)
+        )
+        
+        self.beta_output = nn.Linear(hidden_size // 2, 1)
+        
+        # 베타 초기화 - 평균 1.0 근처에서 시작
+        nn.init.normal_(self.beta_output.weight, mean=0.0, std=0.1)
+        nn.init.constant_(self.beta_output.bias, 1.0)  # 베타 1.0에서 시작
 
     def forward(self, asset_data, common_data):
-        """
-        벡터화된 연산을 사용한 최적화된 순전파 함수.
-        
-        Args:
-            asset_data: 자산 수익률 텐서
-                - 배치 처리 시: (batch_size, num_assets, seq_len, 1)
-                - 단일 샘플: (num_assets, seq_len, 1)
-            common_data: 공통 시장 데이터
-                - 배치 처리 시: (batch_size, seq_len, num_features)
-                - 단일 샘플: (seq_len, num_features)
-                        
-        Returns:
-            betas: 예측된 베타 계수, 형태: (batch_size, num_assets)
-        """
         # 데이터로더에서 오는 형태에 맞게 차원 조정
         if asset_data.dim() == 4:
-            # 배치 처리: (batch_size, num_assets, seq_len, 1) -> (batch_size, num_assets, seq_len)
             asset_data = asset_data.squeeze(-1)
         elif asset_data.dim() == 3 and asset_data.shape[2] == 1:
-            # 단일 샘플: (num_assets, seq_len, 1) -> (1, num_assets, seq_len)
             asset_data = asset_data.squeeze(-1).unsqueeze(0)
         
         if common_data.dim() == 2:
-            # 단일 샘플: (seq_len, num_features) -> (1, seq_len, num_features)
             common_data = common_data.unsqueeze(0)
-        # 배치 처리인 경우 (batch_size, seq_len, num_features)는 그대로 사용
             
         batch_size, num_assets, seq_len = asset_data.shape
         device = asset_data.device
         
-        # 시장 수익률 추출 및 인코딩 (기존과 동일)
+        # 시장 수익률 추출 및 인코딩
         market_returns = common_data[:, :, 0].unsqueeze(-1)  # (batch, seq_len, 1)
         market_context = self.returns_encoder(market_returns)  # (batch, hidden_size)
         
-        # 🔥 핵심 최적화: 모든 자산을 한 번에 처리
-        # 단계 1: 배치 처리를 위한 자산 데이터 재구성
+        # 배치 처리를 위한 자산 데이터 재구성
         asset_returns_flat = asset_data.transpose(1, 2).reshape(-1, seq_len).unsqueeze(-1)
-        # 변환: (batch, assets, seq) → (batch, seq, assets) → (batch*assets, seq) → (batch*assets, seq, 1)
         
-        # 단계 2: 단일 TCN 호출로 모든 자산 처리
+        # 단일 TCN 호출로 모든 자산 처리
         asset_contexts_flat = self.returns_encoder(asset_returns_flat)  # (batch*assets, hidden_size)
         
-        # 단계 3: 개별 자산으로 다시 재구성
+        # 개별 자산으로 다시 재구성
         asset_contexts = asset_contexts_flat.view(batch_size, num_assets, -1)  # (batch, assets, hidden_size)
         
-        # 단계 4: 모든 자산에 대한 자산 임베딩 한 번에 생성
+        # 모든 자산에 대한 자산 임베딩 한 번에 생성
         asset_ids = torch.arange(num_assets, device=device).unsqueeze(0).expand(batch_size, -1)
         asset_embeddings = self.asset_embeddings(asset_ids)  # (batch, assets, hidden_size)
         
-        # 단계 5: 시장 컨텍스트를 자산 차원에 맞게 확장
+        # 시장 컨텍스트를 자산 차원에 맞게 확장
         market_context_expanded = market_context.unsqueeze(1).expand(-1, num_assets, -1)
         
-        # 단계 6: 모든 정보 소스 결합
+        # 모든 정보 소스 결합
         combined = torch.cat([
             asset_contexts,           # (batch, assets, hidden_size)
             market_context_expanded,  # (batch, assets, hidden_size)
             asset_embeddings         # (batch, assets, hidden_size)
         ], dim=2)  # (batch, assets, hidden_size * 3)
         
-        # 단계 7: MLP 처리를 위한 평탄화 및 모든 베타 한 번에 예측
+        # MLP 처리를 위한 평탄화 및 모든 베타 한 번에 예측
         combined_flat = combined.view(-1, combined.size(-1))  # (batch*assets, hidden_size*3)
-        betas_flat = self.beta_predictor(combined_flat)  # (batch*assets, 1)
         
-        # 단계 8: 최종 형태로 재구성
+        # 베타 예측
+        hidden1 = self.beta_hidden1(combined_flat)  # (batch*assets, hidden_size)
+        hidden2 = self.beta_hidden2(hidden1)        # (batch*assets, hidden_size//2)
+        betas_flat = self.beta_output(hidden2)      # (batch*assets, 1)
+        
+        # 원래 배치 형태로 재구성
         betas = betas_flat.view(batch_size, num_assets)  # (batch, assets)
         
         return betas
 
 
 class AdaptivePortfolioOptimizer(nn.Module):
-    """
-    TCN 기반 베타 추정을 사용한 적응형 포트폴리오 최적화
-    
-    작업 흐름:
-    1. TCN이 각 자산의 베타를 추정
-    2. CAPM으로 베타를 사용하여 기대 수익률 계산
-    3. 배치 데이터에서 공분산 행렬 계산
-    4. 포트폴리오 가중치에 대한 평균-분산 최적화
-    5. 목적 함수로 샤프 비율 계산
-    6. 최대화를 위한 손실로 음의 샤프 비율 사용
-    """
-    
     def __init__(self, num_assets=5, hidden_size=64, num_channels=[32, 64, 128], kernel_size=3, dropout=0.2, risk_free_rate=0.02):
         super().__init__()
-        
         self.num_assets = num_assets
+        self.hidden_size = hidden_size
+        self.risk_free_rate = risk_free_rate
         
-        # 베타 추정 모듈
+        # 베타 추정기
         self.beta_estimator = BetaEstimator(
             num_assets=num_assets,
             hidden_size=hidden_size,
@@ -218,9 +185,9 @@ class AdaptivePortfolioOptimizer(nn.Module):
             dropout=dropout
         )
         
-        # 양의 정부호 공분산을 보장하기 위한 정규화 항 (안정성을 위해 증가)
-        self.cov_regularization = 1e-4
-    
+        # 공분산 정규화 파라미터
+        self.cov_regularization = 1e-6
+
     def capm_expected_returns(self, betas, market_return, risk_free_rate=None, common_data=None):
         """
         CAPM을 사용한 기대 수익률 계산: E(R_i) = R_f + β_i * (E(R_m) - R_f)
@@ -244,15 +211,25 @@ class AdaptivePortfolioOptimizer(nn.Module):
         market_premium = common_data[:, :, 0].mean(dim=1)  # Mkt-RF (batch_size,)
         risk_free_rate = common_data[:, :, 1].mean(dim=1)  # RF (batch_size,)
         
+        # 시장 프리미엄 검증 (극단적으로 작은 경우만 보정)
+        market_premium_abs = torch.abs(market_premium)
+        
+        # 매우 작은 경우만 최소값 설정 (나머지는 원래 값 사용)
+        market_premium_scaled = torch.where(
+            market_premium_abs < 1e-6,  # 매우 작은 경우만
+            torch.sign(market_premium) * 1e-5,  # 최소값 설정
+            market_premium  # 원래 일간 데이터 그대로 사용
+        )
+        
         # 차원 맞추기
-        if market_premium.dim() == 1:
-            market_premium = market_premium.unsqueeze(-1)  # (batch_size, 1)
+        if market_premium_scaled.dim() == 1:
+            market_premium_scaled = market_premium_scaled.unsqueeze(-1)  # (batch_size, 1)
         if risk_free_rate.dim() == 1:
             risk_free_rate = risk_free_rate.unsqueeze(-1)  # (batch_size, 1)
             
         # CAPM: E(R_i) = R_f + β_i * (E(R_m) - R_f)
-        # 여기서 market_premium = E(R_m) - R_f 이므로
-        expected_returns = risk_free_rate + betas * market_premium
+        # 여기서 market_premium_scaled = E(R_m) - R_f 이므로
+        expected_returns = risk_free_rate + betas * market_premium_scaled
         return expected_returns
     
     def compute_covariance_matrix(self, returns_data):
@@ -282,61 +259,68 @@ class AdaptivePortfolioOptimizer(nn.Module):
         cov_matrix = cov_matrix + self.cov_regularization * eye
         
         return cov_matrix
-    
+
     def mean_variance_optimization(self, expected_returns, cov_matrix):
         """
-        수치적으로 안정한 평균-분산 최적화 해결
+        제약 조건이 있는 최소분산 포트폴리오 최적화
+        해석적 해: w = (Σ^(-1) * 1) / (1^T * Σ^(-1) * 1)
         
         Args:
             expected_returns: 기대 수익률 (batch_size, num_assets)
             cov_matrix: 공분산 행렬 (batch_size, num_assets, num_assets)
             
         Returns:
-            weights: 포트폴리오 가중치 (batch_size, num_assets), 합계 = 1
+            weights: 포트폴리오 가중치 (batch_size, num_assets), 합계 = 정확히 1
         """
         batch_size = expected_returns.shape[0]
         device = expected_returns.device
         
-        # 입력 검증 및 정규화
-        expected_returns = torch.clamp(expected_returns, min=-0.5, max=0.5)  # 극한값 제한
-        
         try:
-            # 더 안정한 역행렬 계산을 위해 SVD 분해 사용
-            # 또는 안정한 선형 시스템 해결을 위해 solve 사용
+            # 단위 벡터 (모든 원소가 1인 벡터)
             ones = torch.ones(batch_size, self.num_assets, 1, device=device)
             
-            # 제약 조건: w^T * 1 = 1을 만족하는 최적 포트폴리오 계산
-            # solve: cov_matrix * w = expected_returns
+            # 수치적 안정성을 위한 정규화
+            eye = torch.eye(self.num_assets, device=device).unsqueeze(0).expand(batch_size, -1, -1)
+            cov_regularized = cov_matrix + self.cov_regularization * eye
+            
+            # 최소분산 포트폴리오의 해석적 해
+            # w = (Σ^(-1) * 1) / (1^T * Σ^(-1) * 1)
+            
+            # Step 1: Σ^(-1) * 1 계산
             try:
-                weights = torch.linalg.solve(cov_matrix, expected_returns.unsqueeze(-1)).squeeze(-1)
+                # Cholesky 분해 사용 (가장 안정한 방법)
+                L = torch.linalg.cholesky(cov_regularized)
+                cov_inv_ones = torch.cholesky_solve(ones, L)  # (batch, assets, 1)
             except:
-                # solve 실패 시 더 안정한 방법 사용
-                weights = torch.linalg.lstsq(cov_matrix, expected_returns.unsqueeze(-1))[0].squeeze(-1)
+                # Cholesky 실패 시 일반 solve 사용
+                try:
+                    cov_inv_ones = torch.linalg.solve(cov_regularized, ones)
+                except:
+                    # 모든 직접 방법 실패 시 pseudo-inverse
+                    cov_pinv = torch.linalg.pinv(cov_regularized)
+                    cov_inv_ones = torch.bmm(cov_pinv, ones)
             
-            # 가중치 크기 제한 (폭발 방지)
-            weights = torch.clamp(weights, min=-10.0, max=10.0)
+            # Step 2: 1^T * Σ^(-1) * 1 계산 (스칼라)
+            denominator = torch.bmm(ones.transpose(1, 2), cov_inv_ones).squeeze()  # (batch,)
             
-            # 정규화: 합이 1이 되도록
-            weights_sum = weights.sum(dim=1, keepdim=True)
-            weights_sum = torch.clamp(torch.abs(weights_sum), min=1e-8)
-            weights = weights / weights_sum
+            # Step 3: 최종 가중치 계산
+            denominator_safe = torch.clamp(denominator, min=1e-8)
+            weights = cov_inv_ones.squeeze(-1) / denominator_safe.unsqueeze(-1)  # (batch, assets)            
             
-            # NaN 또는 Inf 체크
             if not torch.isfinite(weights).all():
                 raise RuntimeError("가중치에 NaN 또는 Inf가 발생했습니다.")
-                
+            
         except Exception as e:
-            # 모든 실패 시 안전한 대체 방법: 동일 가중치
-            print(f"최적화 실패: {e}. 동일 가중치를 사용합니다.")
+            print(f"최소분산 포트폴리오 계산 실패: {e}. 동일 가중치를 사용합니다.")
             weights = torch.ones(batch_size, self.num_assets, device=device) / self.num_assets
         
-        # 최종 안전 검증
-        weights = torch.clamp(weights, min=0.0, max=1.0)  # 물리적 제약 조건
+        # 롱온리 제약 (음의 가중치 제거)
+        weights = torch.clamp(weights, min=0.0)
         
-        # 정규화 (마지막 안전장치)
+        # 재정규화 (롱온리 제약 때문에 필요)
         weights_sum = weights.sum(dim=1, keepdim=True)
-        weights_sum = torch.clamp(weights_sum, min=1e-8)
-        weights = weights / weights_sum
+        weights_sum_safe = torch.clamp(weights_sum, min=1e-8)
+        weights = weights / weights_sum_safe
         
         return weights
     
@@ -373,40 +357,52 @@ class AdaptivePortfolioOptimizer(nn.Module):
     
     def calculate_sharpe_ratio(self, weights, expected_returns, cov_matrix, risk_free_rate=None):
         """
-        샤프 비율 계산: (E(R_p) - R_f) / σ_p
+        샤프 비율 계산: (E(R_p) - R_f) / σ_p (연간화)
         
         Args:
             weights: 포트폴리오 가중치 (batch_size, num_assets)
-            expected_returns: 기대 수익률 (batch_size, num_assets)
-            cov_matrix: 공분산 행렬 (batch_size, num_assets, num_assets)
-            risk_free_rate: 무위험 이자율 (필수)
+            expected_returns: 기대 수익률 (batch_size, num_assets) - 일간
+            cov_matrix: 공분산 행렬 (batch_size, num_assets, num_assets) - 일간
+            risk_free_rate: 무위험 이자율 (batch_size,) - 일간
             
         Returns:
-            sharpe_ratio: 샤프 비율 (batch_size,)
+            sharpe_ratio: 샤프 비율 (batch_size,) - 연간화
         """
         if risk_free_rate is None:
             raise ValueError("샤프 비율 계산을 위해서는 무위험 이자율이 필요합니다.")
             
-        # 포트폴리오 기대 수익률: w^T * μ
-        portfolio_return = torch.sum(weights * expected_returns, dim=1)  # (batch,)
+        # 포트폴리오 기대 수익률 (일간): w^T * μ
+        portfolio_return_daily = torch.sum(weights * expected_returns, dim=1)  # (batch,)
         
-        # 포트폴리오 분산: w^T * Σ * w
-        portfolio_variance = torch.bmm(
+        # 포트폴리오 분산 (일간): w^T * Σ * w
+        portfolio_variance_daily = torch.bmm(
             torch.bmm(weights.unsqueeze(1), cov_matrix),  # (batch, 1, assets)
             weights.unsqueeze(-1)  # (batch, assets, 1)
         ).squeeze()  # (batch,)
         
-        # 포트폴리오 표준편차
-        portfolio_std = torch.sqrt(torch.clamp(portfolio_variance, min=1e-8))
+        # 포트폴리오 표준편차 (일간)
+        portfolio_std_daily = torch.sqrt(torch.clamp(portfolio_variance_daily, min=1e-8))
         
-        # 샤프 비율
-        sharpe_ratio = (portfolio_return - risk_free_rate) / portfolio_std
+        # 연간화 (252 거래일 기준)
+        trading_days_per_year = 252
+        
+        # 연간 수익률 = 일평균 수익률 × 252 (복리 효과 무시한 단순 근사)
+        portfolio_return_annual = portfolio_return_daily * trading_days_per_year
+        
+        # 연간 변동성 = 일간 표준편차 × √252 (변동성의 제곱근 법칙)
+        portfolio_std_annual = portfolio_std_daily * torch.sqrt(torch.tensor(trading_days_per_year, device=portfolio_std_daily.device))
+        
+        # 연간 무위험 이자율 = 일간 무위험 이자율 × 252
+        risk_free_annual = risk_free_rate * trading_days_per_year
+        
+        # 연간화된 샤프 비율 = (연간수익률 - 연간무위험이자율) / 연간변동성
+        sharpe_ratio = (portfolio_return_annual - risk_free_annual) / portfolio_std_annual
         
         return sharpe_ratio
     
     def calculate_realized_sharpe_ratio(self, weights, future_returns, common_data):
         """
-        실현 샤프 비율 계산: 실제 미래 수익률 데이터 사용
+        실현 샤프 비율 계산: 실제 미래 수익률 데이터 사용 (연간화)
         
         Args:
             weights: 포트폴리오 가중치 (batch_size, num_assets)
@@ -414,7 +410,7 @@ class AdaptivePortfolioOptimizer(nn.Module):
             common_data: 공통 시장 데이터 (batch_size, seq_len, 2)
             
         Returns:
-            realized_sharpe_ratio: 실현 샤프 비율 (batch_size,)
+            realized_sharpe_ratio: 실현 샤프 비율 (batch_size,) - 연간화
         """
         # 각 날짜별 포트폴리오 수익률 계산
         # future_returns: (batch_size, pred_horizon, num_assets)
@@ -423,15 +419,27 @@ class AdaptivePortfolioOptimizer(nn.Module):
             weights.unsqueeze(1) * future_returns, dim=2
         )  # (batch_size, pred_horizon)
         
-        # 포트폴리오 수익률 통계
-        portfolio_mean = daily_portfolio_returns.mean(dim=1)  # (batch_size,)
-        portfolio_std = daily_portfolio_returns.std(dim=1)    # (batch_size,)
+        # 포트폴리오 수익률 통계 (일간)
+        portfolio_mean_daily = daily_portfolio_returns.mean(dim=1)  # (batch_size,) 일평균
+        portfolio_std_daily = daily_portfolio_returns.std(dim=1)    # (batch_size,) 일표준편차
         
-        # 무위험 이자율 (같은 기간 평균)
-        risk_free_rate = common_data[:, :, 1].mean(dim=1)  # (batch_size,)
+        # 무위험 이자율 (일간)
+        risk_free_daily = common_data[:, :, 1].mean(dim=1)  # (batch_size,)
         
-        # 실현 샤프 비율
-        realized_sharpe = (portfolio_mean - risk_free_rate) / torch.clamp(portfolio_std, min=1e-8)
+        # 연간화 (252 거래일 기준)
+        trading_days_per_year = 252
+        
+        # 연간 수익률 = 일평균 수익률 × 252 (복리 효과 무시한 단순 근사)
+        portfolio_return_annual = portfolio_mean_daily * trading_days_per_year
+        
+        # 연간 변동성 = 일표준편차 × √252 (변동성의 제곱근 법칙)
+        portfolio_std_annual = portfolio_std_daily * torch.sqrt(torch.tensor(trading_days_per_year, device=portfolio_std_daily.device))
+        
+        # 연간 무위험 이자율 = 일무위험이자율 × 252
+        risk_free_annual = risk_free_daily * trading_days_per_year
+        
+        # 연간화된 샤프 비율 = (연간수익률 - 연간무위험이자율) / 연간변동성
+        realized_sharpe = (portfolio_return_annual - risk_free_annual) / torch.clamp(portfolio_std_annual, min=1e-8)
         
         return realized_sharpe
 
