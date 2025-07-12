@@ -10,7 +10,7 @@ from tqdm import tqdm
 import warnings
 warnings.filterwarnings('ignore')
 
-from model import AdaptivePortfolioOptimizer
+from model.w_mlp_model import AdaptivePortfolioOptimizer
 from dataloader import create_dataloaders
 from trainer import PortfolioTrainer
 
@@ -107,11 +107,25 @@ class PortfolioEvaluator:
                 # 결과 저장
                 all_results['betas'].append(results['betas'].cpu())
                 all_results['weights'].append(results['weights'].cpu())
-                all_results['sharpe_ratios'].append(results['realized_sharpe_ratio'].cpu())
-                all_results['realized_returns'].append(results['realized_return'].cpu())
+                
+                # 스칼라 값들 처리
+                sharpe = results['realized_sharpe_ratio'].cpu()
+                returns = results['realized_return'].cpu()
+                loss = results['loss'].cpu()
+                
+                # 배치 차원이 있는지 확인하고 적절히 처리
+                if sharpe.dim() == 0:
+                    sharpe = sharpe.unsqueeze(0)
+                if returns.dim() == 0:
+                    returns = returns.unsqueeze(0)
+                if loss.dim() == 0:
+                    loss = loss.unsqueeze(0)
+                
+                all_results['sharpe_ratios'].append(sharpe)
+                all_results['realized_returns'].append(returns)
                 all_results['expected_returns'].append(results['expected_returns'].cpu())
                 all_results['cov_matrices'].append(results['cov_matrix'].cpu())
-                all_results['losses'].append(results['loss'].cpu())
+                all_results['losses'].append(loss)
                 
                 # 통계 업데이트
                 total_loss += results['loss'].item()
@@ -122,7 +136,18 @@ class PortfolioEvaluator:
         # 결과 결합
         for key in all_results:
             if key != 'cov_matrices':  # 공분산 행렬은 3D이므로 별도 처리
-                all_results[key] = torch.cat(all_results[key], dim=0).numpy()
+                # 스칼라 값들에 대해 차원 추가
+                if key in ['sharpe_ratios', 'realized_returns', 'losses']:
+                    # 각 배치의 스칼라 값들을 1차원으로 확장
+                    expanded_tensors = []
+                    for tensor in all_results[key]:
+                        if tensor.dim() == 0:  # 스칼라인 경우
+                            expanded_tensors.append(tensor.unsqueeze(0))
+                        else:
+                            expanded_tensors.append(tensor)
+                    all_results[key] = torch.cat(expanded_tensors, dim=0).numpy()
+                else:
+                    all_results[key] = torch.cat(all_results[key], dim=0).numpy()
             else:
                 all_results[key] = torch.cat(all_results[key], dim=0).numpy()
         
@@ -194,7 +219,15 @@ class PortfolioEvaluator:
         # 5. 가중치 합 검증
         ax = axes[4]
         weight_sums = np.sum(weights, axis=1)
-        ax.hist(weight_sums, bins=50, alpha=0.7, color='green', edgecolor='black')
+        
+        # 데이터 범위에 따라 빈 개수 조정
+        data_range = np.max(weight_sums) - np.min(weight_sums)
+        if data_range < 0.1:  # 범위가 매우 작은 경우
+            bins = min(20, int(len(weight_sums) / 10))  # 데이터 크기에 비례하여 조정
+        else:
+            bins = min(50, int(len(weight_sums) / 5))  # 기본값
+        
+        ax.hist(weight_sums, bins=bins, alpha=0.7, color='green', edgecolor='black')
         ax.axvline(x=1.0, color='red', linestyle='--', linewidth=2, label='목표값 (1.0)')
         ax.set_title('가중치 합 분포', fontsize=14, fontweight='bold')
         ax.set_xlabel('가중치 합')
@@ -260,7 +293,14 @@ class PortfolioEvaluator:
         
         # 1. 샤프 비율 분포
         ax = axes[0, 0]
-        sns.histplot(sharpe_ratios, bins=50, kde=True, ax=ax, alpha=0.7, color='blue')
+        # 데이터 범위에 따라 빈 개수 조정
+        sharpe_range = np.max(sharpe_ratios) - np.min(sharpe_ratios)
+        if sharpe_range < 0.1:
+            sharpe_bins = min(20, int(len(sharpe_ratios) / 10))
+        else:
+            sharpe_bins = min(50, int(len(sharpe_ratios) / 5))
+        
+        sns.histplot(sharpe_ratios, bins=sharpe_bins, kde=True, ax=ax, alpha=0.7, color='blue')
         ax.set_title('샤프 비율 분포', fontsize=14, fontweight='bold')
         ax.set_xlabel('샤프 비율')
         ax.set_ylabel('빈도')
@@ -272,7 +312,14 @@ class PortfolioEvaluator:
         
         # 2. 실현 수익률 분포
         ax = axes[0, 1]
-        sns.histplot(realized_returns, bins=50, kde=True, ax=ax, alpha=0.7, color='green')
+        # 데이터 범위에 따라 빈 개수 조정
+        return_range = np.max(realized_returns) - np.min(realized_returns)
+        if return_range < 0.1:
+            return_bins = min(20, int(len(realized_returns) / 10))
+        else:
+            return_bins = min(50, int(len(realized_returns) / 5))
+        
+        sns.histplot(realized_returns, bins=return_bins, kde=True, ax=ax, alpha=0.7, color='green')
         ax.set_title('실현 수익률 분포', fontsize=14, fontweight='bold')
         ax.set_xlabel('실현 수익률')
         ax.set_ylabel('빈도')
@@ -345,13 +392,13 @@ class PortfolioEvaluator:
             'performance': performance,
             'weight_stats': {
                 'mean': np.mean(results['weights'], axis=0).tolist(),
-                'std': weight_std.tolist(),
-                'correlation': weight_corr.tolist()
+                'std': weight_std.tolist() if hasattr(weight_std, 'tolist') else weight_std,
+                'correlation': weight_corr.tolist() if hasattr(weight_corr, 'tolist') else weight_corr
             },
             'beta_stats': {
                 'mean': np.mean(results['betas'], axis=0).tolist(),
                 'std': np.std(results['betas'], axis=0).tolist(),
-                'correlation': beta_corr.tolist()
+                'correlation': beta_corr.tolist() if hasattr(beta_corr, 'tolist') else beta_corr
             },
             'sharpe_stats': {
                 'mean': float(np.mean(results['sharpe_ratios'])),
@@ -365,8 +412,25 @@ class PortfolioEvaluator:
         
         # JSON으로 저장
         import json
+        
+        # JSON 직렬화 가능한 형태로 변환하는 함수
+        def convert_to_json_serializable(obj):
+            if isinstance(obj, (np.ndarray, torch.Tensor)):
+                return obj.tolist()
+            elif isinstance(obj, dict):
+                return {k: convert_to_json_serializable(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [convert_to_json_serializable(item) for item in obj]
+            elif isinstance(obj, (np.integer, np.floating)):
+                return obj.item()
+            else:
+                return obj
+        
+        # summary_stats를 JSON 직렬화 가능한 형태로 변환
+        json_serializable_stats = convert_to_json_serializable(summary_stats)
+        
         with open(save_path / 'summary_report.json', 'w', encoding='utf-8') as f:
-            json.dump(summary_stats, f, indent=2, ensure_ascii=False)
+            json.dump(json_serializable_stats, f, indent=2, ensure_ascii=False)
         
         # 전체 결과 저장
         np.savez_compressed(save_path / 'detailed_results.npz', **results)
@@ -389,34 +453,22 @@ def parse_arguments():
     default_data_dir = os.path.join(script_dir, 'data')
     
     # 모델 관련
-    parser.add_argument('--model_path', type=str, required=True,
-                       help='훈련된 모델 체크포인트 경로')
-    parser.add_argument('--num_assets', type=int, default=5,
-                       help='자산 수')
-    parser.add_argument('--hidden_size', type=int, default=64,
-                       help='은닉층 크기')
-    parser.add_argument('--num_channels', nargs='+', type=int, default=[32, 64, 128],
-                       help='TCN 채널 수 리스트')
-    parser.add_argument('--kernel_size', type=int, default=3,
-                       help='컨볼루션 커널 크기')
-    parser.add_argument('--dropout', type=float, default=0.2,
-                       help='드롭아웃 비율')
+    parser.add_argument('--model_path', type=str, default='checkpoints/best_model.pth', help='모델 체크포인트 경로 (기본값: checkpoints/best_model.pth)')
+    parser.add_argument('--num_assets', type=int, default=5, help='자산 수')
+    parser.add_argument('--hidden_size', type=int, default=64, help='은닉층 크기')
+    parser.add_argument('--num_channels', nargs='+', type=int, default=[32, 64, 128], help='TCN 채널 수 리스트')
+    parser.add_argument('--kernel_size', type=int, default=3, help='컨볼루션 커널 크기')
+    parser.add_argument('--dropout', type=float, default=0.2, help='드롭아웃 비율')
     
     # 데이터 관련
-    parser.add_argument('--data_dir', type=str, default=default_data_dir,
-                       help='데이터 디렉토리 경로')
-    parser.add_argument('--batch_size', type=int, default=32,
-                       help='테스트 배치 크기')
-    parser.add_argument('--lookback', type=int, default=252,
-                       help='과거 데이터 길이 (일)')
-    parser.add_argument('--pred_horizon', type=int, default=21,
-                       help='예측 기간 (일)')
+    parser.add_argument('--data_dir', type=str, default=default_data_dir, help='데이터 디렉토리 경로')
+    parser.add_argument('--batch_size', type=int, default=32, help='테스트 배치 크기')
+    parser.add_argument('--lookback', type=int, default=252, help='과거 데이터 길이 (일)')
+    parser.add_argument('--pred_horizon', type=int, default=21, help='예측 기간 (일)')
     
     # 기타
-    parser.add_argument('--device', type=str, default='auto',
-                       help='계산 디바이스 (auto, cuda, cpu)')
-    parser.add_argument('--save_path', type=str, default='results',
-                       help='결과 저장 경로')
+    parser.add_argument('--device', type=str, default='auto', help='계산 디바이스 (auto, cuda, cpu)')
+    parser.add_argument('--save_path', type=str, default='results', help='결과 저장 경로')
     
     return parser.parse_args()
 
